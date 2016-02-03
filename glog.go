@@ -521,7 +521,7 @@ It returns a buffer containing the formatted header and the user's file and line
 The depth specifies how many stack frames above lives the source line to be identified in the log message.
 
 Log lines have this form:
-	Lmmdd hh:mm:ss.uuuuuu threadid file:line] msg...
+	Lmmdd hh:mm:ss.uuuuuu threadid file:line -> caller] msg...
 where the fields are defined as follows:
 	L                A single character, representing the log level (eg 'I' for INFO)
 	mm               The month (zero padded; ie May is '05')
@@ -530,10 +530,11 @@ where the fields are defined as follows:
 	threadid         The space-padded thread ID as returned by GetTID()
 	file             The file name
 	line             The line number
+	caller           The caller function name
 	msg              The user-supplied message
 */
 func (l *loggingT) header(s severity, depth int) (*buffer, string, int) {
-	_, file, line, ok := runtime.Caller(3 + depth)
+	pc, file, line, ok := runtime.Caller(3 + depth)
 	if !ok {
 		file = "???"
 		line = 1
@@ -543,11 +544,14 @@ func (l *loggingT) header(s severity, depth int) (*buffer, string, int) {
 			file = file[slash+1:]
 		}
 	}
-	return l.formatHeader(s, file, line), file, line
+	caller := runtime.FuncForPC(pc).Name()
+	slash := strings.LastIndex(caller, "/")
+	caller = caller[slash+1:]
+	return l.formatHeader(s, file, line, caller), file, line
 }
 
 // formatHeader formats a log header using the provided file name and line number.
-func (l *loggingT) formatHeader(s severity, file string, line int) *buffer {
+func (l *loggingT) formatHeader(s severity, file string, line int, caller string) *buffer {
 	now := timeNow()
 	if line < 0 {
 		line = 0 // not a real line number, but acceptable to someDigits
@@ -561,7 +565,7 @@ func (l *loggingT) formatHeader(s severity, file string, line int) *buffer {
 	// It's worth about 3X. Fprintf is hard.
 	_, month, day := now.Date()
 	hour, minute, second := now.Clock()
-	// Lmmdd hh:mm:ss.uuuuuu threadid file:line]
+	// Lmmdd hh:mm:ss.uuuuuu threadid file:line -> caller]
 	buf.tmp[0] = severityChar[s]
 	buf.twoDigits(1, int(month))
 	buf.twoDigits(3, day)
@@ -580,9 +584,8 @@ func (l *loggingT) formatHeader(s severity, file string, line int) *buffer {
 	buf.WriteString(file)
 	buf.tmp[0] = ':'
 	n := buf.someDigits(1, line)
-	buf.tmp[n+1] = ']'
-	buf.tmp[n+2] = ' '
-	buf.Write(buf.tmp[:n+3])
+	buf.Write(buf.tmp[:n+1])
+	buf.WriteString(" -> " + caller + "] ")
 	return buf
 }
 
@@ -658,8 +661,8 @@ func (l *loggingT) printf(s severity, format string, args ...interface{}) {
 // printWithFileLine behaves like print but uses the provided file and line number.  If
 // alsoLogToStderr is true, the log message always appears on standard error; it
 // will also appear in the log file unless --logtostderr is set.
-func (l *loggingT) printWithFileLine(s severity, file string, line int, alsoToStderr bool, args ...interface{}) {
-	buf := l.formatHeader(s, file, line)
+func (l *loggingT) printWithFileLine(s severity, file string, line int, caller string, alsoToStderr bool, args ...interface{}) {
+	buf := l.formatHeader(s, file, line, caller)
 	fmt.Fprint(buf, args...)
 	if buf.Bytes()[buf.Len()-1] != '\n' {
 		buf.WriteByte('\n')
@@ -948,7 +951,7 @@ func (lb logBridge) Write(b []byte) (n int, err error) {
 	}
 	// printWithFileLine with alsoToStderr=true, so standard log messages
 	// always appear on standard error.
-	logging.printWithFileLine(severity(lb), file, line, true, text)
+	logging.printWithFileLine(severity(lb), file, line, "?", true, text)
 	return len(b), nil
 }
 
